@@ -420,8 +420,9 @@ func (e *VBNetExtractor) Extract(filePath string, src []byte) (*parser.Extractio
 // string literals are blanked to spaces. Newlines are kept, so the copy has
 // the same length and every offset and line number still indexes src.
 //
-// Comments are `'` to end of line, and `REM` when it opens a statement (at
-// line start or after a `:` separator). String literals are `"..."` with
+// Comments are `'` to end of line, and `REM` wherever it stands as a whole
+// token: at the start of input or after whitespace or a `:` separator, and
+// followed by whitespace or the end of input. String literals are `"..."` with
 // `""` as the escaped quote, and may span lines as they can since VB 14. In
 // an interpolated string `$"..."`, the `{...}` holes are code and stay
 // visible, except for a `:format` clause, which is blanked with the text.
@@ -443,7 +444,6 @@ func vbMaskCommentsAndStrings(src []byte) []byte {
 	// holes holds the `{` nesting depth of each open interpolation hole,
 	// innermost last. Code inside a hole may use braces of its own.
 	var holes []int
-	stmtStart := true
 	for i := 0; i < len(src); i++ {
 		c := src[i]
 		next := byte(0)
@@ -474,11 +474,8 @@ func vbMaskCommentsAndStrings(src []byte) []byte {
 			}
 		default:
 			top := len(holes) - 1
-			atStart := stmtStart
-			stmtStart = c == '\n' || c == ':' ||
-				(stmtStart && (c == ' ' || c == '\t' || c == '\r'))
 			switch {
-			case c == '\'' || (atStart && vbIsRem(src, i)):
+			case c == '\'' || vbIsRem(src, i):
 				for ; i < len(src) && src[i] != '\n'; i++ {
 					blank(i)
 				}
@@ -494,7 +491,6 @@ func vbMaskCommentsAndStrings(src []byte) []byte {
 			case top >= 0 && holes[top] == 0 && (c == '}' || (c == ':' && next != '=')):
 				blank(i)
 				holes = holes[:top]
-				stmtStart = false
 				mode = inInterpolated
 				if c == ':' {
 					mode = inFormat
@@ -509,11 +505,19 @@ func vbMaskCommentsAndStrings(src []byte) []byte {
 	return out
 }
 
-// vbIsRem reports whether a case-insensitive REM keyword starts at i and is
+// vbIsRem reports whether a case-insensitive REM keyword starts at i: it
+// must be preceded by the start of input, whitespace or a `:` separator, and
 // followed by whitespace or the end of input.
 func vbIsRem(src []byte, i int) bool {
 	if i+3 > len(src) || !strings.EqualFold(string(src[i:i+3]), "rem") {
 		return false
+	}
+	if i > 0 {
+		switch src[i-1] {
+		case ' ', '\t', '\r', '\n', ':':
+		default:
+			return false
+		}
 	}
 	return i+3 == len(src) || src[i+3] == ' ' || src[i+3] == '\t' ||
 		src[i+3] == '\r' || src[i+3] == '\n'

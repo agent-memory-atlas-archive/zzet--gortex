@@ -727,6 +727,23 @@ End Class
 		"New in a comment is not a type reference")
 }
 
+// REM may also follow a statement on the same line, after whitespace, as in
+// Microsoft's `MsgBox(statusMessage) REM Inform operator of status.`
+func TestVBNetExtractor_InlineRemIsAComment(t *testing.T) {
+	src := []byte(`Public Class Worker
+    Public Sub Run()
+        client.Save() REM client.Delete()
+    End Sub
+End Class
+`)
+	res, err := NewVBNetExtractor().Extract("w.vb", src)
+	require.NoError(t, err)
+
+	assert.True(t, vbHasEdge(res.Edges, graph.EdgeCalls, "", "unresolved::Save"))
+	assert.False(t, vbHasEdge(res.Edges, graph.EdgeCalls, "", "unresolved::Delete"),
+		"a call after an inline REM is a comment")
+}
+
 // Malformed, truncated and non-UTF8 input must not panic, and degradation must
 // stay local: the extractor should still return the file node and whatever
 // declarations it could recognise.
