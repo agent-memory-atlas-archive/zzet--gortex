@@ -38,6 +38,22 @@ const qMqlAll = `
     declarator: (function_declarator
       declarator: [(identifier) (qualified_identifier)] @func.name)) @func.def
 
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (function_declarator
+        declarator: [(identifier) (qualified_identifier)] @func.name))) @func.def
+
+  (function_definition
+    declarator: (pointer_declarator
+      declarator: (pointer_declarator
+        declarator: (function_declarator
+          declarator: [(identifier) (qualified_identifier)] @func.name)))) @func.def
+
+  (function_definition
+    declarator: (reference_declarator
+      (function_declarator
+        declarator: [(identifier) (qualified_identifier)] @func.name))) @func.def
+
   (template_declaration
     (function_definition) @tmplfn.inner) @tmplfn.def
 
@@ -260,8 +276,8 @@ func (e *MQLExtractor) emitMqlType(m parser.QueryResult, defCap, nameCap, flavor
 	e.walkMqlTypeBody(def.Node, src, filePath, fileID, name, id, seen, result)
 }
 
-// walkMqlTypeBody extracts methods (definitions with bodies) and field
-// type-uses from a class/struct/interface body.
+// walkMqlTypeBody extracts methods (definitions with bodies, templated or
+// not) and field type-uses from a class/struct/interface body.
 func (e *MQLExtractor) walkMqlTypeBody(typeNode *sitter.Node, src []byte, filePath, fileID, typeName, typeID string, seen map[string]bool, result *parser.ExtractionResult) {
 	var body *sitter.Node
 	for i, nc := 0, int(typeNode.NamedChildCount()); i < nc; i++ {
@@ -282,6 +298,22 @@ func (e *MQLExtractor) walkMqlTypeBody(typeNode *sitter.Node, src []byte, filePa
 			continue
 		case "function_definition":
 			e.addMqlMethodFromNode(child, src, filePath, fileID, typeName, typeID, seen, result)
+		case "template_declaration":
+			// A templated member method (`template<typename T> T Clamp(T v)
+			// {…}`). The query's template dispatch skips in-body templates
+			// (cppInsideTypeBody), so the wrapped function_definition is
+			// claimed here through the method path — the `_method_L` marker
+			// addMqlMethodFromNode seeds then keeps the func.def dispatch
+			// (pointer or plain declarator) from double-emitting it. A
+			// template wrapping a nested class/struct has no
+			// function_definition child and keeps its class/struct path.
+			for j, nc2 := 0, int(child.NamedChildCount()); j < nc2; j++ {
+				gc := child.NamedChild(j)
+				if gc.Type() == "function_definition" {
+					e.addMqlMethodFromNode(gc, src, filePath, fileID, typeName, typeID, seen, result)
+					break
+				}
+			}
 		case "field_declaration":
 			// Member/field type-use: a `CFoo bar;` member references CFoo.
 			line := int(child.StartPoint().Row) + 1

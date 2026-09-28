@@ -212,8 +212,10 @@ one grammar serves all three extensions.
 - `interface` declarations index as interfaces with `Meta["methods"]`
   (declared method names) for implementation matching; interface methods mint
   no method nodes of their own.
-- Class/struct bodies mint methods with `member_of` edges; `#include
-  "file.mqh"` emits `imports` edges to `unresolved::import::` targets.
+- Class/struct bodies mint methods with `member_of` edges — templated member
+  methods included (`template<typename T> T Clamp(T v) {…}` indexes as a
+  method of its type); `#include "file.mqh"` emits `imports` edges to
+  `unresolved::import::` targets.
 - Calls attribute to the enclosing function/method; member calls target
   `unresolved::*.<method>` with the receiver text available for resolver work.
 

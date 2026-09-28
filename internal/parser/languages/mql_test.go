@@ -186,6 +186,131 @@ input int X = 5;
 	assert.Equal(t, want, got)
 }
 
+// TestMQLExtractor_TemplateMemberMethods: a templated member method must
+// take the method path — KindMethod node, member_of edge, receiver meta, and
+// calls inside its body attributed to it. Before the fix the type-body walk
+// ignored template_declaration while the query's template dispatch skipped
+// in-body templates: the plain-declarator form leaked out as a free function
+// and the pointer-return form was dropped entirely (its calls with it). A
+// template wrapping a nested class keeps the class path — no method node.
+func TestMQLExtractor_TemplateMemberMethods(t *testing.T) {
+	src := []byte(`class CFactory
+  {
+public:
+   template<typename T>
+   T Clamp(T v) { Print(v); return v; }
+
+   template<typename T>
+   T *Wrap(const T &item) { Print(item); return NULL; }
+
+   template<typename T>
+   class CPolicy { };
+  };
+`)
+	e := NewMQLExtractor()
+	result, err := e.Extract("factory.mq5", src)
+	require.NoError(t, err)
+
+	// The plain-declarator template method is a METHOD, not a free function.
+	var clamp, wrap *graph.Node
+	for _, n := range nodesOfKind(result.Nodes, graph.KindMethod) {
+		switch n.Name {
+		case "Clamp":
+			clamp = n
+		case "Wrap":
+			wrap = n
+		}
+	}
+	require.NotNil(t, clamp, "template method Clamp not emitted as method")
+	assert.Equal(t, "factory.mq5::CFactory.Clamp", clamp.ID)
+	assert.Equal(t, "CFactory", clamp.Meta["receiver"])
+	assert.Equal(t, "CFactory", clamp.Meta["scope_class"])
+
+	// The pointer-return template method too (previously dropped entirely).
+	require.NotNil(t, wrap, "pointer-return template method Wrap not emitted")
+	assert.Equal(t, "factory.mq5::CFactory.Wrap", wrap.ID)
+
+	// member_of edges to the owning type.
+	memberTargets := map[string]bool{}
+	for _, e := range edgesOfKind(result.Edges, graph.EdgeMemberOf) {
+		memberTargets[e.From] = true
+	}
+	assert.True(t, memberTargets["factory.mq5::CFactory.Clamp"], "Clamp missing member_of edge")
+	assert.True(t, memberTargets["factory.mq5::CFactory.Wrap"], "Wrap missing member_of edge")
+
+	// Calls inside the template bodies are attributed to the method.
+	callSources := map[string]bool{}
+	for _, e := range edgesOfKind(result.Edges, graph.EdgeCalls) {
+		callSources[e.From] = true
+	}
+	assert.True(t, callSources["factory.mq5::CFactory.Clamp"], "call inside Clamp not attributed to the method")
+	assert.True(t, callSources["factory.mq5::CFactory.Wrap"], "call inside Wrap not attributed to the method")
+
+	// The nested template class keeps the class path: emitted as a type, and
+	// no method node is minted for it.
+	for _, n := range nodesOfKind(result.Nodes, graph.KindMethod) {
+		assert.NotEqual(t, "CPolicy", n.Name, "nested template class must not become a method")
+	}
+	var policy *graph.Node
+	for _, n := range nodesOfKind(result.Nodes, graph.KindType) {
+		if n.Name == "CPolicy" {
+			policy = n
+		}
+	}
+	require.NotNil(t, policy, "nested template class CPolicy must keep its type node")
+
+	// No Clamp/Wrap free-function duplicates either.
+	for _, n := range nodesOfKind(result.Nodes, graph.KindFunction) {
+		assert.NotEqual(t, "Clamp", n.Name, "template method leaked as a free function")
+		assert.NotEqual(t, "Wrap", n.Name, "template method leaked as a free function")
+	}
+}
+
+// TestMQLExtractor_FreePointerReturnFunctions: free functions with pointer
+// (or double-pointer / reference) declarators must mint function nodes —
+// `CObject *New(...)` is the idiomatic MQL5 factory shape. Before the fix the
+// combined query only matched the plain declarator pattern, so these were
+// silently dropped and every call to them stayed unresolved forever.
+func TestMQLExtractor_FreePointerReturnFunctions(t *testing.T) {
+	src := []byte(`CObject *NewObject(const int kind) { return NULL; }
+CObject **HandleOf(const int slot) { return NULL; }
+int &SlotRef(const int slot) { static int v; return v; }
+
+void Use()
+  {
+   NewObject(0);
+  }
+`)
+	e := NewMQLExtractor()
+	result, err := e.Extract("pointers.mq5", src)
+	require.NoError(t, err)
+
+	funcs := map[string]bool{}
+	for _, n := range nodesOfKind(result.Nodes, graph.KindFunction) {
+		funcs[n.Name] = true
+	}
+	assert.True(t, funcs["NewObject"], "pointer-return free function NewObject missing")
+	assert.True(t, funcs["HandleOf"], "double-pointer free function HandleOf missing")
+	assert.True(t, funcs["SlotRef"], "reference-return free function SlotRef missing")
+	assert.True(t, funcs["Use"], "plain free function Use missing")
+
+	// defines edges exist and the call resolves its caller attribution.
+	defined := map[string]bool{}
+	for _, e := range edgesOfKind(result.Edges, graph.EdgeDefines) {
+		defined[e.To] = true
+	}
+	assert.True(t, defined["pointers.mq5::NewObject"])
+	assert.True(t, defined["pointers.mq5::Use"])
+
+	var callsUse bool
+	for _, e := range edgesOfKind(result.Edges, graph.EdgeCalls) {
+		if e.From == "pointers.mq5::Use" && e.To == "unresolved::NewObject" {
+			callsUse = true
+		}
+	}
+	assert.True(t, callsUse, "call to NewObject not attributed to Use")
+}
+
 // TestMQLDialect_Stamping: dialect comes from the extension for .mq4/.mq5,
 // and from content sniffing for .mqh headers (MQL5 markers win, otherwise
 // the documented mql4 default).
