@@ -274,7 +274,9 @@ type multiRepoLookup interface {
 //   - It never moves a brand-new file (one that exists in no checkout):
 //     a fresh write_file lands under the prefix the caller named.
 //   - It re-roots only when the match is unambiguous (exactly one
-//     worktree contains the file); two candidates leave abs untouched.
+//     worktree contains the file). Two or more candidates are refused
+//     when refuseAmbiguous is set, and leave abs untouched otherwise.
+//
 // refuseAmbiguous distinguishes a caller-stated checkout selection (an
 // explicit repo prefix, or a prefix recovered from graph metadata) from
 // an inferred one (the sole-tracked-repo and anchorUnprefixedExisting
@@ -307,8 +309,13 @@ func worktreeRootedPath(abs, root string, mi multiRepoLookup, refuseAmbiguous bo
 			continue
 		}
 		if match != "" && match != candidate {
-			// Ambiguous among worktrees themselves — leave the path at
-			// its originally-resolved location, as before.
+			// Ambiguous among worktrees themselves. An inferred anchor
+			// must refuse: falling back to abs would mutate (or create)
+			// the main checkout's copy, the wrong-checkout write this
+			// guard exists to prevent. An explicit selection keeps abs.
+			if refuseAmbiguous {
+				return "", fmt.Errorf("%w: %q resolves to both %q and %q", errPathAmbiguousCheckout, rel, match, candidate)
+			}
 			return abs, nil
 		}
 		match = candidate
